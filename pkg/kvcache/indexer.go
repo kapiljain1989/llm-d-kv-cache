@@ -90,6 +90,25 @@ func NewKVCacheIndexer(ctx context.Context, config *Config, tokenProcessor kvblo
 	// When tracing is not configured, otel.Tracer() returns a no-op implementation.
 	kvBlockIndex = kvblock.NewTracedIndex(kvBlockIndex)
 
+	// Create model registry from config first (needed for scorer selection)
+	var modelRegistry *ModelRegistry
+	if len(config.ModelConfigs) > 0 {
+		modelRegistry = NewModelRegistry(config.ModelConfigs)
+	} else {
+		// Use default registry (all models treated as non-HMA)
+		modelRegistry = NewDefaultModelRegistry()
+	}
+
+	// Auto-select scoring strategy based on model registry:
+	// - If any model is HMA → use HybridPrefixMatch scorer
+	// - Otherwise → use LongestPrefixMatch scorer
+	if hasHMAModels(modelRegistry) {
+		config.KVBlockScorerConfig.ScoringStrategy = HybridPrefixMatch
+		config.KVBlockScorerConfig.ModelRegistry = modelRegistry
+	} else {
+		config.KVBlockScorerConfig.ScoringStrategy = LongestPrefixMatch
+	}
+
 	// override backend configs with the ones from the config, if the defaults are not used.
 	config.KVBlockScorerConfig.BackendConfigs = config.BackendConfigs
 	scorer, err := NewKVBlockScorer(config.KVBlockScorerConfig)
@@ -104,15 +123,6 @@ func NewKVCacheIndexer(ctx context.Context, config *Config, tokenProcessor kvblo
 	tokenizersPool, err := tokenization.NewTokenizationPool(ctx, config.TokenizersPoolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tokenizers pool: %w", err)
-	}
-
-	// Create model registry from config
-	var modelRegistry *ModelRegistry
-	if len(config.ModelConfigs) > 0 {
-		modelRegistry = NewModelRegistry(config.ModelConfigs)
-	} else {
-		// Use default registry (all models treated as non-HMA)
-		modelRegistry = NewDefaultModelRegistry()
 	}
 
 	return &Indexer{
@@ -279,7 +289,7 @@ func (k *Indexer) ScoreTokens(
 		attribute.Int("llm_d.kv_cache.blocks_found", blocksFound),
 	)
 
-	podScores, err := k.kvBlockScorer.Score(ctx, blockKeys, keyToPods)
+	podScores, err := k.kvBlockScorer.Score(ctx, blockKeys, keyToPods, modelName)
 	if err != nil {
 		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to query kvblock scorer: %w", err)
@@ -309,4 +319,17 @@ func (k *Indexer) SetTokenizer(tokenizer tokenization.Tokenizer, modelName strin
 // blockSize returns the block size from the injected token processor.
 func (k *Indexer) blockSize() int {
 	return k.tokenProcessor.BlockSize()
+}
+
+// hasHMAModels checks if any model in the registry uses HMA.
+func hasHMAModels(registry *ModelRegistry) bool {
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+
+	for _, config := range registry.configs {
+		if config.IsHMA {
+			return true
+		}
+	}
+	return false
 }

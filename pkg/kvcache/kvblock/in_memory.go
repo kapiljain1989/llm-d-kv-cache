@@ -209,7 +209,7 @@ func (m *InMemoryIndex) Add(ctx context.Context, engineKeys, requestKeys []Block
 			existingEntry, found := podCache.cache.Get(cacheKey)
 			if found {
 				// Check StoredGroups to determine simple vs HMA model (same pattern as Evict)
-				if entry.StoredGroups == nil {
+				if entry.StoredGroups == 0 {
 					// Simple model - no group tracking needed, just update LRU
 					traceLogger.Info("updated existing pod entry (simple model)",
 						"requestKey", requestKey, "pod", existingEntry)
@@ -227,10 +227,9 @@ func (m *InMemoryIndex) Add(ctx context.Context, engineKeys, requestKeys []Block
 					PodIdentifier: entry.PodIdentifier,
 					DeviceTier:    entry.DeviceTier,
 					Speculative:   entry.Speculative,
-					StoredGroups:  entry.StoredGroups, // nil for simple models, []int for HMA
+					StoredGroups:  entry.StoredGroups, // 0 for simple models, bitmask for HMA
 				}
 				podCache.cache.Add(cacheKey, newEntry)
-				traceLogger.Info("added new pod entry", "requestKey", requestKey, "pod", newEntry)
 			}
 		}
 		podCache.mu.Unlock()
@@ -289,8 +288,8 @@ func (m *InMemoryIndex) Evict(ctx context.Context, key BlockHash, keyType KeyTyp
 			continue
 		}
 
-		// For simple (non-HMA) models: StoredGroups is nil, remove entire entry
-		if entry.StoredGroups == nil {
+		// For simple (non-HMA) models: StoredGroups is 0, remove entire entry
+		if entry.StoredGroups == 0 {
 			podCache.cache.Remove(cacheKey)
 			traceLogger.Info("removed pod entry (simple model)",
 				"requestKey", requestKey, "pod", existingEntry)
@@ -298,7 +297,7 @@ func (m *InMemoryIndex) Evict(ctx context.Context, key BlockHash, keyType KeyTyp
 			// For HMA models: remove specific groups
 			updatedGroups := removeGroups(existingEntry.StoredGroups, entry.StoredGroups)
 
-			if len(updatedGroups) == 0 {
+			if updatedGroups == 0 {
 				// No groups left, remove the entire pod entry
 				podCache.cache.Remove(cacheKey)
 				traceLogger.Info("removed pod entry (no groups remaining)",
@@ -362,47 +361,16 @@ func podCacheKey(podIdentifier, deviceTier string, speculative bool) string {
 	return key
 }
 
-// mergeGroupsUnique merges two group lists, removing duplicates and preserving order.
-// Elements from 'existing' come first, followed by new elements from 'incoming'.
+// mergeGroupsUnique merges two group bitmasks using bitwise OR.
 // This function should only be called for HMA models where group tracking is enabled.
-func mergeGroupsUnique(existing, incoming []int) []int {
-	// If incoming is empty, return existing as-is
-	if len(incoming) == 0 {
-		return existing
-	}
-	firstIncoming := incoming[0]
-
-	for _, v := range existing {
-		if v == firstIncoming {
-			return existing // Already there, nothing to do
-		}
-	}
-	result := make([]int, 0, len(existing)+1)
-	result = append(result, existing...)
-	result = append(result, firstIncoming)
-	return result
+func mergeGroupsUnique(existing, incoming uint32) uint32 {
+	return existing | incoming
 }
 
-// removeGroups removes specified groups from the list,
-// maintaining order of remaining elements.
+// removeGroups removes specified groups from a bitmask using bitwise AND-NOT.
 // This function should only be called for HMA models where group tracking is enabled.
-func removeGroups(existing, toRemove []int) []int {
-	if len(toRemove) == 0 || len(existing) == 0 {
-		return existing
-	}
-	target := toRemove[0]
-	targetIdx := -1
-	for i, v := range existing {
-		if v == target {
-			targetIdx = i
-			break
-		}
-	}
-	if targetIdx == -1 {
-		return existing
-	}
-	copy(existing[targetIdx:], existing[targetIdx+1:])
-	return existing[:len(existing)-1]
+func removeGroups(existing, toRemove uint32) uint32 {
+	return existing &^ toRemove
 }
 
 // podsPerKeyPrintHelper formats a map of keys to pod names for printing.

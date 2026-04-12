@@ -27,8 +27,8 @@ import (
 )
 
 // TestPoolEventProcessing_GroupIDHandling verifies that:
-// 1. Event with group_id AND model is HMA → StoredGroups = []int{group_id}.
-// 2. Event with group_id BUT model is non-HMA → StoredGroups = nil (ignore group_id).
+// 1. Event with group_id AND model is HMA → StoredGroups = bitmask with bit group_id set.
+// 2. Event with group_id BUT model is non-HMA → StoredGroups = 0 (ignore group_id).
 // 3. Event without group_id (group_id=0 default) → depends on model config.
 func TestPoolEventProcessing_GroupIDHandling(t *testing.T) {
 	ctx := context.Background()
@@ -74,19 +74,19 @@ func TestPoolEventProcessing_GroupIDHandling(t *testing.T) {
 
 		pool.processEventBatch(ctx, batch, "test-pod", "DeepSeek-V3")
 
-		// Verify StoredGroups was set to [1]
+		// Verify StoredGroups was set to bitmask with bit 1 set
 		requestKeys, err := tokenProcessor.TokensToKVBlockKeys(kvblock.EmptyBlockHash, tokens, "DeepSeek-V3", nil)
 		require.NoError(t, err)
 		result, err := index.Lookup(ctx, requestKeys, sets.Set[string]{})
 		require.NoError(t, err)
 
-		// Should have entries with StoredGroups = [1]
+		// Should have entries with StoredGroups = (1 << 1) = 2
 		found := false
 		for _, entries := range result {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.NotNil(t, entry.StoredGroups, "HMA model MUST have non-nil StoredGroups")
-					assert.Equal(t, []int{1}, entry.StoredGroups, "Should track group ID 1")
+					assert.NotZero(t, entry.StoredGroups, "HMA model MUST have non-zero StoredGroups")
+					assert.Equal(t, uint32(1<<1), entry.StoredGroups, "Should track group ID 1")
 					found = true
 				}
 			}
@@ -126,7 +126,7 @@ func TestPoolEventProcessing_GroupIDHandling(t *testing.T) {
 
 		pool.processEventBatch(ctx, batch, "test-pod", "Qwen/Qwen3-8B")
 
-		// Verify StoredGroups is nil (group_id ignored)
+		// Verify StoredGroups is 0 (group_id ignored)
 		requestKeys, err := tokenProcessor.TokensToKVBlockKeys(
 			kvblock.EmptyBlockHash,
 			[]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
@@ -135,12 +135,12 @@ func TestPoolEventProcessing_GroupIDHandling(t *testing.T) {
 		result, err := index.Lookup(ctx, requestKeys, sets.Set[string]{})
 		require.NoError(t, err)
 
-		// Should have entries with StoredGroups = nil
+		// Should have entries with StoredGroups = 0
 		found := false
 		for _, entries := range result {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.Nil(t, entry.StoredGroups, "Non-HMA model MUST have nil StoredGroups (ignore group_id)")
+					assert.Zero(t, entry.StoredGroups, "Non-HMA model MUST have 0 StoredGroups (ignore group_id)")
 					found = true
 				}
 			}
@@ -183,7 +183,7 @@ func TestPoolEventProcessing_GroupIDHandling(t *testing.T) {
 
 		pool.processEventBatch(ctx, batch, "test-pod", "DeepSeek-V3")
 
-		// Verify StoredGroups = [0]
+		// Verify StoredGroups = (1 << 0) = 1
 		requestKeys, err := tokenProcessor.TokensToKVBlockKeys(
 			kvblock.EmptyBlockHash,
 			[]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
@@ -196,8 +196,8 @@ func TestPoolEventProcessing_GroupIDHandling(t *testing.T) {
 		for _, entries := range result {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.NotNil(t, entry.StoredGroups, "HMA model should track groups")
-					assert.Equal(t, []int{0}, entry.StoredGroups, "Should track group ID 0")
+					assert.NotZero(t, entry.StoredGroups, "HMA model should track groups")
+					assert.Equal(t, uint32(1<<0), entry.StoredGroups, "Should track group ID 0")
 					found = true
 				}
 			}
@@ -237,7 +237,7 @@ func TestPoolEventProcessing_GroupIDHandling(t *testing.T) {
 
 		pool.processEventBatch(ctx, batch, "test-pod", "Qwen/Qwen3-8B")
 
-		// Verify StoredGroups is nil
+		// Verify StoredGroups is 0
 		requestKeys, err := tokenProcessor.TokensToKVBlockKeys(
 			kvblock.EmptyBlockHash,
 			[]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
@@ -250,7 +250,7 @@ func TestPoolEventProcessing_GroupIDHandling(t *testing.T) {
 		for _, entries := range result {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.Nil(t, entry.StoredGroups, "Non-HMA model should have nil StoredGroups")
+					assert.Zero(t, entry.StoredGroups, "Non-HMA model should have 0 StoredGroups")
 					found = true
 				}
 			}
@@ -285,7 +285,7 @@ func TestPoolEventProcessing_GroupIDHandling(t *testing.T) {
 
 		pool.processEventBatch(ctx, batch, "test-pod", "unknown-model")
 
-		// Verify StoredGroups is nil (unknown model defaults to non-HMA)
+		// Verify StoredGroups is 0 (unknown model defaults to non-HMA)
 		requestKeys, err := tokenProcessor.TokensToKVBlockKeys(
 			kvblock.EmptyBlockHash,
 			[]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
@@ -298,7 +298,7 @@ func TestPoolEventProcessing_GroupIDHandling(t *testing.T) {
 		for _, entries := range result {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.Nil(t, entry.StoredGroups, "Unknown model should default to non-HMA (nil StoredGroups)")
+					assert.Zero(t, entry.StoredGroups, "Unknown model should default to non-HMA (0 StoredGroups)")
 					found = true
 				}
 			}
@@ -359,12 +359,12 @@ func TestPoolEventProcessing_MultipleBlockHashes(t *testing.T) {
 		// Should have 2 entries, one for each block
 		assert.Len(t, result, 2, "Should have entries for both blocks")
 
-		// Verify each entry has StoredGroups = [1]
+		// Verify each entry has StoredGroups = (1 << 1)
 		for _, entries := range result {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.NotNil(t, entry.StoredGroups, "HMA model MUST have non-nil StoredGroups")
-					assert.Equal(t, []int{1}, entry.StoredGroups, "Should track group ID 1")
+					assert.NotZero(t, entry.StoredGroups, "HMA model MUST have non-zero StoredGroups")
+					assert.Equal(t, uint32(1<<1), entry.StoredGroups, "Should track group ID 1")
 				}
 			}
 		}
@@ -406,7 +406,7 @@ func TestPoolEventProcessing_MultipleBlockHashes(t *testing.T) {
 
 		pool.processEventBatch(ctx, batch, "test-pod", "Qwen/Qwen3-8B")
 
-		// Verify both blocks are tracked with nil StoredGroups
+		// Verify both blocks are tracked with 0 StoredGroups
 		requestKeys, err := tokenProcessor.TokensToKVBlockKeys(kvblock.EmptyBlockHash, tokens, "Qwen/Qwen3-8B", nil)
 		require.NoError(t, err)
 		result, err := index.Lookup(ctx, requestKeys, sets.Set[string]{})
@@ -417,7 +417,7 @@ func TestPoolEventProcessing_MultipleBlockHashes(t *testing.T) {
 		for _, entries := range result {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.Nil(t, entry.StoredGroups, "Non-HMA model MUST have nil StoredGroups")
+					assert.Zero(t, entry.StoredGroups, "Non-HMA model MUST have 0 StoredGroups")
 				}
 			}
 		}
@@ -497,8 +497,8 @@ func TestPoolEventProcessing_WithParentHash(t *testing.T) {
 		for _, entries := range childResult {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.NotNil(t, entry.StoredGroups)
-					assert.Equal(t, []int{0}, entry.StoredGroups)
+					assert.NotZero(t, entry.StoredGroups)
+					assert.Equal(t, uint32(1<<0), entry.StoredGroups)
 				}
 			}
 		}
@@ -553,7 +553,7 @@ func TestPoolEventProcessing_WithParentHash(t *testing.T) {
 
 		pool.processEventBatch(ctx, childBatch, "test-pod", "Qwen/Qwen3-8B")
 
-		// Verify both blocks stored with nil StoredGroups
+		// Verify both blocks stored with 0 StoredGroups
 		parentRequestKeys, err := tokenProcessor.TokensToKVBlockKeys(kvblock.EmptyBlockHash, parentTokens, "Qwen/Qwen3-8B", nil)
 		require.NoError(t, err)
 		parentResult, err := index.Lookup(ctx, parentRequestKeys, sets.Set[string]{})
@@ -566,11 +566,11 @@ func TestPoolEventProcessing_WithParentHash(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, childResult, 1)
 
-		// Verify nil StoredGroups for simple model
+		// Verify 0 StoredGroups for simple model
 		for _, entries := range childResult {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.Nil(t, entry.StoredGroups, "Non-HMA model should have nil StoredGroups")
+					assert.Zero(t, entry.StoredGroups, "Non-HMA model should have 0 StoredGroups")
 				}
 			}
 		}
@@ -628,7 +628,7 @@ func TestPoolEventProcessing_BlockRemovedEvent(t *testing.T) {
 		for _, entries := range result {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.ElementsMatch(t, []int{0, 1}, entry.StoredGroups, "Should have both groups")
+					assert.Equal(t, uint32((1<<0)|(1<<1)), entry.StoredGroups, "Should have both groups")
 				}
 			}
 		}
@@ -649,7 +649,7 @@ func TestPoolEventProcessing_BlockRemovedEvent(t *testing.T) {
 		for _, entries := range result {
 			for _, entry := range entries {
 				if entry.PodIdentifier == "test-pod" {
-					assert.Equal(t, []int{1}, entry.StoredGroups, "Only group 1 should remain")
+					assert.Equal(t, uint32(1<<1), entry.StoredGroups, "Only group 1 should remain")
 				}
 			}
 		}

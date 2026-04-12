@@ -268,7 +268,7 @@ func (r *RedisIndex) Add(ctx context.Context, engineKeys, requestKeys []BlockHas
 					PodIdentifier: entry.PodIdentifier,
 					DeviceTier:    entry.DeviceTier,
 					Speculative:   entry.Speculative,
-					StoredGroups:  entry.StoredGroups, // nil for simple models, []int for HMA
+					StoredGroups:  entry.StoredGroups, // 0 for simple models, bitmask for HMA
 				}
 
 				data, err := json.Marshal(newEntry)
@@ -288,7 +288,7 @@ func (r *RedisIndex) Add(ctx context.Context, engineKeys, requestKeys []BlockHas
 			}
 
 			// Check StoredGroups to determine simple vs HMA model (same pattern as Evict)
-			if entry.StoredGroups == nil {
+			if entry.StoredGroups == 0 {
 				// Simple model - no group tracking needed
 			} else {
 				// HMA model - merge groups
@@ -359,8 +359,8 @@ func (r *RedisIndex) Evict(ctx context.Context, key BlockHash, keyType KeyType, 
 			return fmt.Errorf("failed to unmarshal existing entry: %w", err)
 		}
 
-		// For simple (non-HMA) models: StoredGroups is nil, remove entire entry
-		if entry.StoredGroups == nil { //nolint:nestif // Existing complexity
+		// For simple (non-HMA) models: StoredGroups is 0, remove entire entry
+		if entry.StoredGroups == 0 { //nolint:nestif // Existing complexity
 			if err := r.RedisClient.HDel(ctx, redisKey, entryKey).Err(); err != nil {
 				return fmt.Errorf("failed to delete entry from Redis: %w", err)
 			}
@@ -368,7 +368,7 @@ func (r *RedisIndex) Evict(ctx context.Context, key BlockHash, keyType KeyType, 
 			// For HMA models: remove specific groups
 			updatedGroups := removeGroups(existingEntry.StoredGroups, entry.StoredGroups)
 
-			if len(updatedGroups) == 0 {
+			if updatedGroups == 0 {
 				// No groups left, remove the entire entry
 				if err := r.RedisClient.HDel(ctx, redisKey, entryKey).Err(); err != nil {
 					return fmt.Errorf("failed to delete entry from Redis: %w", err)

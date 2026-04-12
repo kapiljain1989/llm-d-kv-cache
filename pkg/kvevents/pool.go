@@ -262,10 +262,10 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 			isHMA := p.modelRegistry.IsHMA(effectiveModelName)
 
 			// Only populate StoredGroups for HMA models to save CPU and memory
-			// For simple models: skip group processing entirely (nil StoredGroups)
-			var storedGroups []int
+			// For simple models: skip group processing entirely (0 StoredGroups)
+			var storedGroups uint32
 			if isHMA {
-				storedGroups = []int{ev.GroupIdx}
+				storedGroups = 1 << ev.GroupIdx
 			}
 
 			podEntries := []kvblock.PodEntry{{
@@ -355,10 +355,10 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 			isHMA := p.modelRegistry.IsHMA(modelName)
 
 			// Only populate StoredGroups for HMA models to save CPU and memory
-			// For simple models: nil StoredGroups → evict entire entry immediately
-			var storedGroups []int
+			// For simple models: 0 StoredGroups → evict entire entry immediately
+			var storedGroups uint32
 			if isHMA {
-				storedGroups = []int{ev.GroupIdx}
+				storedGroups = 1 << ev.GroupIdx
 			}
 
 			podEntries := []kvblock.PodEntry{{

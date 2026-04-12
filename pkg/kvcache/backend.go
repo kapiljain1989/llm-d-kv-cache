@@ -61,8 +61,8 @@ type ModelConfig struct {
 	// Name is the model identifier (e.g., "Qwen/Qwen3-8B", "DeepSeek-V3")
 	Name string `json:"name"`
 	// IsHMA indicates whether this model uses Hybrid Multi-head Attention.
-	// When true, StoredGroups tracking is enabled for cache entries.
-	// When false, StoredGroups is left nil to save memory.
+	// When true, StoredGroups tracking is enabled for cache entries (non-zero bitmask).
+	// When false, StoredGroups is left 0 to save memory.
 	IsHMA bool `json:"isHMA"`
 	// AttentionGroups defines the attention group configuration for HMA models.
 	// Only used when IsHMA is true.
@@ -72,21 +72,59 @@ type ModelConfig struct {
 	AttentionGroups []AttentionGroupConfig `json:"attentionGroups,omitempty"`
 }
 
+// ModelAttentionInfo holds precomputed attention group metadata for scoring.
+type ModelAttentionInfo struct {
+	FullGroupID     int
+	SWAGroupIDs     []int
+	SWAWindowBlocks []int
+}
+
+func cdiv(a, b int) int {
+	return (a + b - 1) / b
+}
+
+func buildAttentionInfo(config *ModelConfig) *ModelAttentionInfo {
+	if !config.IsHMA {
+		return nil
+	}
+	info := &ModelAttentionInfo{FullGroupID: -1}
+	for _, group := range config.AttentionGroups {
+		switch group.AttentionType {
+		case AttentionTypeFull:
+			info.FullGroupID = group.GroupID
+		case AttentionTypeSlidingWindow:
+			if group.BlockSize > 0 && group.SlidingWindowSize > 0 {
+				info.SWAGroupIDs = append(info.SWAGroupIDs, group.GroupID)
+				info.SWAWindowBlocks = append(info.SWAWindowBlocks, cdiv(group.SlidingWindowSize-1, group.BlockSize))
+			}
+		}
+	}
+	if info.FullGroupID < 0 || len(info.SWAWindowBlocks) == 0 {
+		return nil
+	}
+	return info
+}
+
 // ModelRegistry manages model configurations.
 // It provides thread-safe access to model metadata needed for event processing.
 type ModelRegistry struct {
-	mu      sync.RWMutex
-	configs map[string]*ModelConfig
+	mu            sync.RWMutex
+	configs       map[string]*ModelConfig
+	attentionInfo map[string]*ModelAttentionInfo
 }
 
 // NewModelRegistry creates a new ModelRegistry with optional initial configs.
 func NewModelRegistry(initialConfigs []*ModelConfig) *ModelRegistry {
 	registry := &ModelRegistry{
-		configs: make(map[string]*ModelConfig),
+		configs:       make(map[string]*ModelConfig),
+		attentionInfo: make(map[string]*ModelAttentionInfo),
 	}
 
 	for _, config := range initialConfigs {
 		registry.configs[config.Name] = config
+		if info := buildAttentionInfo(config); info != nil {
+			registry.attentionInfo[config.Name] = info
+		}
 	}
 
 	return registry
@@ -114,6 +152,19 @@ func (r *ModelRegistry) RegisterModel(config *ModelConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.configs[config.Name] = config
+	if info := buildAttentionInfo(config); info != nil {
+		r.attentionInfo[config.Name] = info
+	} else {
+		delete(r.attentionInfo, config.Name)
+	}
+}
+
+// GetAttentionInfo returns precomputed attention info for HMA scoring.
+// Returns nil for non-HMA models or models without valid full+SWA groups.
+func (r *ModelRegistry) GetAttentionInfo(modelName string) *ModelAttentionInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.attentionInfo[modelName]
 }
 
 // IsHMA checks if a model uses Hybrid Multi-head Attention.

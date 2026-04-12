@@ -116,7 +116,7 @@ func (c *CostPodCache) Add(entry PodEntry) {
 	if existingVal, loaded := c.cache.Load(cacheKey); loaded { //nolint:nestif // Existing complexity
 		if existingEntry, ok := existingVal.(*PodEntry); ok {
 			// Check StoredGroups to determine simple vs HMA model (same pattern as Evict)
-			if entry.StoredGroups == nil {
+			if entry.StoredGroups == 0 {
 				// Simple model - no group tracking needed
 			} else {
 				// HMA model - merge groups
@@ -131,7 +131,7 @@ func (c *CostPodCache) Add(entry PodEntry) {
 			PodIdentifier: entry.PodIdentifier,
 			DeviceTier:    entry.DeviceTier,
 			Speculative:   entry.Speculative,
-			StoredGroups:  entry.StoredGroups, // nil for simple models, []int for HMA
+			StoredGroups:  entry.StoredGroups, // 0 for simple models, bitmask for HMA
 		}
 		c.cache.Store(cacheKey, newEntry)
 		c.size.Add(1)
@@ -161,8 +161,8 @@ func (c *CostPodCache) RemoveGroups(entry PodEntry) bool {
 		return false
 	}
 
-	// For simple (non-HMA) models: StoredGroups is nil, remove entire entry
-	if entry.StoredGroups == nil {
+	// For simple (non-HMA) models: StoredGroups is 0, remove entire entry
+	if entry.StoredGroups == 0 {
 		c.cache.Delete(cacheKey)
 		c.size.Add(-1)
 		return true
@@ -171,7 +171,7 @@ func (c *CostPodCache) RemoveGroups(entry PodEntry) bool {
 	// For HMA models: remove specific groups
 	updatedGroups := removeGroups(existingEntry.StoredGroups, entry.StoredGroups)
 
-	if len(updatedGroups) == 0 {
+	if updatedGroups == 0 {
 		// No groups left, delete the entry
 		c.cache.Delete(cacheKey)
 		c.size.Add(-1)
@@ -211,14 +211,13 @@ func (c *CostPodCache) CalculateByteSize(keyStr string) int64 {
 		}
 
 		entryCount++
-		totalBytes += int64(len(keyStr))                 // cache key string
-		totalBytes += int64(len(entry.PodIdentifier))    // PodIdentifier string content
-		totalBytes += int64(len(entry.DeviceTier))       // DeviceTier string content
-		totalBytes += int64(len(entry.StoredGroups) * 8) // StoredGroups slice (8 bytes per int)
-		totalBytes += 32                                 // string headers (16 bytes each for 2 strings)
-		totalBytes += 24                                 // slice header for StoredGroups
-		totalBytes += 8                                  // pointer to PodEntry
-		totalBytes += 8                                  // struct padding/alignment
+		totalBytes += int64(len(keyStr))              // cache key string
+		totalBytes += int64(len(entry.PodIdentifier)) // PodIdentifier string content
+		totalBytes += int64(len(entry.DeviceTier))    // DeviceTier string content
+		totalBytes += 4                               // StoredGroups uint32
+		totalBytes += 32                              // string headers (16 bytes each for 2 strings)
+		totalBytes += 8                               // pointer to PodEntry
+		totalBytes += 8                               // struct padding/alignment
 		return true
 	})
 

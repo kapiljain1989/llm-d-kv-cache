@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
 	"github.com/llm-d/llm-d-kv-cache/pkg/kvcache/kvblock"
 )
 
@@ -208,7 +210,12 @@ func (s *HybridPrefixCacheScorer) Score(
 
 	// Check if model uses HMA
 	// If not in registry or IsHMA=false → use simple prefix scoring
-	if !s.ModelRegistry.IsHMA(modelName) {
+	isHMA := s.ModelRegistry.IsHMA(modelName)
+	if !isHMA {
+		// TODO(tmp): Debug logging - REMOVE after debugging
+		logger := log.FromContext(ctx)
+		logger.Info("[TMP-DEBUG] HybridScorer: Model not HMA, using simple prefix",
+			"modelName", modelName)
 		return s.scoreSimplePrefix(ctx, keys, keyToPods)
 	}
 
@@ -216,8 +223,19 @@ func (s *HybridPrefixCacheScorer) Score(
 	attentionGroups := s.ModelRegistry.GetAttentionGroups(modelName)
 	if len(attentionGroups) == 0 {
 		// Model is HMA but no groups configured - log warning and fallback
+		// TODO(tmp): Debug logging - REMOVE after debugging
+		logger := log.FromContext(ctx)
+		logger.Info("[TMP-DEBUG] HybridScorer: HMA model but no groups configured, fallback",
+			"modelName", modelName)
 		return s.scoreSimplePrefix(ctx, keys, keyToPods)
 	}
+
+	// TODO(tmp): Debug logging - REMOVE after debugging
+	logger := log.FromContext(ctx)
+	logger.Info("[TMP-DEBUG] HybridScorer: Scoring HMA model",
+		"modelName", modelName,
+		"numGroups", len(attentionGroups),
+		"numBlocks", len(keys))
 
 	podScores := make(map[string]float64)
 
@@ -232,6 +250,10 @@ func (s *HybridPrefixCacheScorer) Score(
 			for pod, score := range groupScore {
 				podScores[pod] += score * fullAttentionMultiplier
 			}
+			// TODO(tmp): Debug logging - REMOVE after debugging
+			logger.Info("[TMP-DEBUG] HybridScorer: Full attention group scored",
+				"groupID", group.GroupID,
+				"numPods", len(groupScore))
 		case AttentionTypeSlidingWindow:
 			// Sliding window: score from end (suffix matching within window)
 			groupScore := s.scoreSlidingWindowGroup(keys, keyToPods, group.GroupID, group.SlidingWindowSize)
@@ -239,6 +261,11 @@ func (s *HybridPrefixCacheScorer) Score(
 			for pod, score := range groupScore {
 				podScores[pod] += score
 			}
+			// TODO(tmp): Debug logging - REMOVE after debugging
+			logger.Info("[TMP-DEBUG] HybridScorer: Sliding window group scored",
+				"groupID", group.GroupID,
+				"windowSize", group.SlidingWindowSize,
+				"numPods", len(groupScore))
 		default:
 			continue
 		}
@@ -295,6 +322,9 @@ func (s *HybridPrefixCacheScorer) scoreFullAttentionGroup(
 
 	// Filter entries to only those containing this group
 	firstEntries := filterByGroup(keyToPods[keys[0]], groupID)
+	// TODO(tmp): Debug logging - REMOVE after debugging
+	fmt.Printf("[TMP-DEBUG] scoreFullAttentionGroup: blockIdx=0, groupID=%d, totalEntries=%d, filteredEntries=%d\n",
+		groupID, len(keyToPods[keys[0]]), len(firstEntries))
 	fillMaxWeights(curWeights, firstEntries, s.MediumWeights)
 
 	activePods := make(map[string]struct{}, len(curWeights))
@@ -311,6 +341,11 @@ func (s *HybridPrefixCacheScorer) scoreFullAttentionGroup(
 
 		clear(curWeights)
 		entries := filterByGroup(keyToPods[keys[i]], groupID)
+		// TODO(tmp): Debug logging - REMOVE after debugging
+		if i < 3 { // Only log first few blocks to avoid spam
+			fmt.Printf("[TMP-DEBUG] scoreFullAttentionGroup: blockIdx=%d, groupID=%d, totalEntries=%d, filteredEntries=%d, activePods=%d\n",
+				i, groupID, len(keyToPods[keys[i]]), len(entries), len(activePods))
+		}
 		fillMaxWeights(curWeights, entries, s.MediumWeights)
 
 		for pod := range activePods {
@@ -342,9 +377,16 @@ func (s *HybridPrefixCacheScorer) scoreSlidingWindowGroup(
 		startIdx = totalBlocks - windowSize
 	}
 
+	// TODO(tmp): Debug logging - REMOVE after debugging
+	fmt.Printf("[TMP-DEBUG] scoreSlidingWindowGroup: groupID=%d, totalBlocks=%d, windowSize=%d, startIdx=%d\n",
+		groupID, totalBlocks, windowSize, startIdx)
+
 	// Start from the last block (rightmost in window)
 	lastIdx := totalBlocks - 1
 	lastEntries := filterByGroup(keyToPods[keys[lastIdx]], groupID)
+	// TODO(tmp): Debug logging - REMOVE after debugging
+	fmt.Printf("[TMP-DEBUG] scoreSlidingWindowGroup: blockIdx=%d (last), groupID=%d, totalEntries=%d, filteredEntries=%d\n",
+		lastIdx, groupID, len(keyToPods[keys[lastIdx]]), len(lastEntries))
 	fillMaxWeights(curWeights, lastEntries, s.MediumWeights)
 
 	activePods := make(map[string]struct{}, len(curWeights))
@@ -361,6 +403,11 @@ func (s *HybridPrefixCacheScorer) scoreSlidingWindowGroup(
 
 		clear(curWeights)
 		entries := filterByGroup(keyToPods[keys[i]], groupID)
+		// TODO(tmp): Debug logging - REMOVE after debugging
+		if i > lastIdx-3 { // Only log last few blocks to avoid spam
+			fmt.Printf("[TMP-DEBUG] scoreSlidingWindowGroup: blockIdx=%d, groupID=%d, totalEntries=%d, filteredEntries=%d, activePods=%d\n",
+				i, groupID, len(keyToPods[keys[i]]), len(entries), len(activePods))
+		}
 		fillMaxWeights(curWeights, entries, s.MediumWeights)
 
 		for pod := range activePods {

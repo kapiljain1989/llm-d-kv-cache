@@ -127,10 +127,14 @@ func NewPool(cfg *Config, index kvblock.Index, tokenProcessor kvblock.TokenProce
 	}
 
 	// Use provided model registry or default
+	logger := log.FromContext(context.Background())
 	modelRegistry := cfg.ModelRegistry
 	if modelRegistry == nil {
-		// Import required - will add at top of file
+		logger.Info("[TMP-DEBUG] Pool.NewPool: ModelRegistry is NIL, using default (all models non-HMA)")
 		modelRegistry = newDefaultModelRegistry()
+	} else {
+		logger.Info("[TMP-DEBUG] Pool.NewPool: ModelRegistry provided",
+			"isHMA_test", modelRegistry.IsHMA("openai/gpt-oss-20b"))
 	}
 
 	p := &Pool{
@@ -268,6 +272,16 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 				storedGroups = []int{ev.GroupIdx}
 			}
 
+			// TODO(tmp): Debug logging for group_id tracking - REMOVE after debugging
+			debugLogger.Info("[TMP-DEBUG] BlockStored: PodEntry creation",
+				"podID", podIdentifier,
+				"modelName", effectiveModelName,
+				"isHMA", isHMA,
+				"groupIdx", ev.GroupIdx,
+				"storedGroups", storedGroups,
+				"deviceTier", deviceTier,
+				"numBlocks", len(ev.BlockHashes))
+
 			podEntries := []kvblock.PodEntry{{
 				PodIdentifier: podIdentifier,
 				DeviceTier:    deviceTier,
@@ -284,11 +298,28 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 				parentEngineKey := kvblock.BlockHash(ev.ParentHash)
 				key, err := p.index.GetRequestKey(ctx, parentEngineKey)
 				if err != nil {
-					debugLogger.Error(err, "Failed to get request key for parent block",
-						"parentEngineKey", parentEngineKey, "effectiveModelName", effectiveModelName)
+					// TODO(tmp): Enhanced error logging - REMOVE after debugging
+					debugLogger.Error(err, "[TMP-DEBUG] Failed to get request key for parent block - SKIPPING EVENT",
+						"parentEngineKey", parentEngineKey,
+						"effectiveModelName", effectiveModelName,
+						"numBlocksInEvent", len(ev.BlockHashes),
+						"firstEngineKey", ev.BlockHashes[0],
+						"podID", podIdentifier)
 					continue
 				}
 				parentRequestKey = key
+				// TODO(tmp): Debug logging - REMOVE after debugging
+				debugLogger.V(logging.TRACE).Info("[TMP-DEBUG] BlockStored: Parent hash resolved",
+					"parentEngineKey", parentEngineKey,
+					"parentRequestKey", parentRequestKey,
+					"podID", podIdentifier)
+			} else {
+				// TODO(tmp): Debug logging - REMOVE after debugging
+				debugLogger.Info("[TMP-DEBUG] BlockStored: No parent hash (root block)",
+					"podID", podIdentifier,
+					"modelName", effectiveModelName,
+					"numBlocks", len(ev.BlockHashes),
+					"firstEngineKey", ev.BlockHashes[0])
 			}
 
 			var extraFeatures []*kvblock.BlockExtraFeatures
@@ -300,6 +331,15 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 						"podIdentifier", podIdentifier)
 					continue
 				}
+				// TODO(tmp): Debug logging for extraKeys - REMOVE after debugging
+				debugLogger.Info("[TMP-DEBUG] BlockStored: ExtraKeys parsed",
+					"podID", podIdentifier,
+					"modelName", effectiveModelName,
+					"numTokens", len(ev.Tokens),
+					"numEngineBlocks", len(ev.BlockHashes),
+					"numExtraFeatures", len(extraFeatures),
+					"expectedChunks", (len(ev.Tokens)+p.tokenProcessor.BlockSize()-1)/p.tokenProcessor.BlockSize(),
+					"actualChunks", len(ev.Tokens)/p.tokenProcessor.BlockSize())
 			}
 
 			traceLogger := log.FromContext(ctx).V(logging.TRACE)
@@ -329,8 +369,14 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 
 			requestKeys, err := p.tokenProcessor.TokensToKVBlockKeys(parentRequestKey, ev.Tokens, effectiveModelName, extraFeatures)
 			if err != nil {
-				debugLogger.Error(err, "Failed to generate request keys",
-					"podIdentifier", podIdentifier, "effectiveModelName", effectiveModelName)
+				// TODO(tmp): Enhanced error logging - REMOVE after debugging
+				debugLogger.Error(err, "[TMP-DEBUG] Failed to generate request keys - SKIPPING EVENT",
+					"podIdentifier", podIdentifier,
+					"effectiveModelName", effectiveModelName,
+					"numTokens", len(ev.Tokens),
+					"numEngineBlocks", len(ev.BlockHashes),
+					"numExtraFeatures", len(extraFeatures),
+					"tokenProcessorBlockSize", p.tokenProcessor.BlockSize())
 				continue
 			}
 
@@ -341,6 +387,13 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 						"podIdentifier", podIdentifier, "event", ev)
 					continue // Continue processing other events even if one fails
 				}
+				// TODO(tmp): Debug logging - REMOVE after debugging
+				debugLogger.V(logging.TRACE).Info("[TMP-DEBUG] BlockStored: Successfully added to index",
+					"podID", podIdentifier,
+					"modelName", effectiveModelName,
+					"numEngineKeys", len(engineKeys),
+					"numRequestKeys", len(requestKeys),
+					"hasParent", parentRequestKey != kvblock.EmptyBlockHash)
 			}
 
 		case *BlockRemovedEvent:
@@ -361,6 +414,16 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 				storedGroups = []int{ev.GroupIdx}
 			}
 
+			// TODO(tmp): Debug logging for group_id tracking - REMOVE after debugging
+			debugLogger.Info("[TMP-DEBUG] BlockRemoved: PodEntry creation",
+				"podID", podIdentifier,
+				"modelName", modelName,
+				"isHMA", isHMA,
+				"groupIdx", ev.GroupIdx,
+				"storedGroups", storedGroups,
+				"deviceTier", deviceTier,
+				"numBlocks", len(ev.BlockHashes))
+
 			podEntries := []kvblock.PodEntry{{
 				PodIdentifier: podIdentifier,
 				DeviceTier:    deviceTier,
@@ -368,6 +431,7 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 			}}
 
 			// Iterate over the hashes and evict each key.
+			evictedCount := 0
 			for _, hash := range ev.BlockHashes {
 				engineKey := kvblock.BlockHash(hash)
 				if err := p.index.Evict(ctx, engineKey, kvblock.EngineKey, podEntries); err != nil {
@@ -375,6 +439,15 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 						"podIdentifier", podIdentifier, "event", ev)
 					continue // Continue processing other events even if one fails
 				}
+				evictedCount++
+			}
+			// TODO(tmp): Debug logging - REMOVE after debugging
+			if evictedCount > 0 {
+				debugLogger.V(logging.TRACE).Info("[TMP-DEBUG] BlockRemoved: Successfully evicted from index",
+					"podID", podIdentifier,
+					"modelName", modelName,
+					"evictedCount", evictedCount,
+					"totalBlocks", len(ev.BlockHashes))
 			}
 
 		case *AllBlocksClearedEvent:

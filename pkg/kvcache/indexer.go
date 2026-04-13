@@ -102,12 +102,20 @@ func NewKVCacheIndexer(ctx context.Context, config *Config, tokenProcessor kvblo
 	// Auto-select scoring strategy based on model registry:
 	// - If any model is HMA → use HybridPrefixMatch scorer
 	// - Otherwise → use LongestPrefixMatch scorer
-	if hasHMAModels(modelRegistry) {
+	hasHMA := hasHMAModels(modelRegistry)
+	if hasHMA {
 		config.KVBlockScorerConfig.ScoringStrategy = HybridPrefixMatch
 		config.KVBlockScorerConfig.ModelRegistry = modelRegistry
 	} else {
 		config.KVBlockScorerConfig.ScoringStrategy = LongestPrefixMatch
 	}
+
+	// TODO(tmp): Debug logging for scorer selection - REMOVE after debugging
+	logger := log.FromContext(ctx)
+	logger.Info("[TMP-DEBUG] Scorer selection",
+		"hasHMAModels", hasHMA,
+		"selectedStrategy", config.KVBlockScorerConfig.ScoringStrategy,
+		"numModelConfigs", len(config.ModelConfigs))
 
 	// override backend configs with the ones from the config, if the defaults are not used.
 	config.KVBlockScorerConfig.BackendConfigs = config.BackendConfigs

@@ -1,0 +1,295 @@
+# -- Target namespace for all resources
+namespace: llm-d
+
+# -- PYTHONHASHSEED for deterministic hashing, must match between vLLM and EPP.
+pythonHashSeed: "0"
+
+# -- Global image pull secrets
+imagePullSecrets: []
+
+# -- vLLM Deployment Configuration
+vllm:
+  # -- Number of vLLM replicas
+  replicaCount: 1
+  # -- vLLM image pull secrets
+  imagePullSecrets: []
+
+  image:
+    # -- vLLM image repository
+    repository: vllm/vllm-openai
+    # -- vLLM image tag
+    tag: "nightly-b075604da10a9e8ff23d23f63d5113d43f0e4208"
+    # -- vLLM image pull policy
+    pullPolicy: IfNotPresent
+
+  model:
+    # -- Hugging Face model name
+    name: openai/gpt-oss-20b
+    # -- Label used for Kubernetes resources related to this model
+    label: gpt-oss-20b
+    # -- Maximum model length parameter for vLLM
+    maxModelLen: 16384
+
+  # -- Maximum number of batched tokens for vLLM
+  maxNumBatchedTokens: 1024
+
+  # -- Enable or disable chunked prefill
+  enableChunkedPrefill: true
+
+  # -- GPU memory utilization (optional)
+  gpuMemoryUtilization: null
+  # -- Tensor parallel size (optional)
+  tensorParallelSize: null
+
+  # -- vLLM container resource requests and limits
+  resources:
+    limits:
+      nvidia.com/gpu: '1'
+    requests:
+      cpu: '10'
+      memory: 40Gi
+      nvidia.com/gpu: '1'
+
+  # -- Node affinity configuration
+  affinity: {}
+
+  # -- Tolerations configuration
+  tolerations: []
+
+  # -- Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+      scheme: HTTP
+    initialDelaySeconds: 15
+    timeoutSeconds: 1
+    periodSeconds: 10
+    successThreshold: 1
+    failureThreshold: 3
+
+  # -- Startup probe configuration
+  startupProbe:
+    httpGet:
+      path: /health
+      port: 8000
+      scheme: HTTP
+    initialDelaySeconds: 15
+    timeoutSeconds: 1
+    periodSeconds: 10
+    successThreshold: 1
+    failureThreshold: 60
+
+  # -- Additional environment variables for vLLM container
+  extraEnv:
+    VLLM_RPC_TIMEOUT: '1000000'
+
+  # -- Block size for prefix-cache block chunking
+  blockSize: 64
+
+  # -- Labels applied to vLLM pods for InferencePool matching
+  podLabels:
+    llm-d.ai/inference-serving: "true"
+    llm-d.ai/guide: "precise-prefix-cache-aware"
+
+# -- EPP / Inference Scheduler Configuration
+inferenceExtension:
+  # -- Number of EPP replicas
+  replicas: 1
+
+  # -- EPP flags
+  flags:
+    # -- Log verbosity level
+    v: 4
+
+  image:
+    # -- EPP image name
+    name: llm-d-inference-scheduler
+    # -- EPP image registry
+    hub: quay.io/rh-ee-kapjain
+    # -- EPP image tag
+    tag: dev
+    # -- EPP image pull policy
+    pullPolicy: Always
+
+  # -- EPP image pull secrets
+  imagePullSecrets: []
+
+  # -- ext-proc gRPC port
+  extProcPort: 9002
+
+  # -- Extra container ports for EPP (e.g., ZMQ)
+  extraContainerPorts:
+    - name: zmq
+      containerPort: 5557
+      protocol: TCP
+
+  # -- Extra service ports for EPP (e.g., ZMQ)
+  extraServicePorts:
+    - name: zmq
+      port: 5557
+      targetPort: 5557
+      protocol: TCP
+
+  # -- Environment variables for EPP container
+  env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: llm-d-hf-token
+          key: HF_TOKEN
+
+  # -- EPP container resource requests and limits
+  resources:
+    requests:
+      cpu: "4"
+      memory: "2Gi"
+    limits:
+      cpu: "8"
+      memory: "8Gi"
+
+  # -- Tolerations configuration
+  tolerations: []
+
+  # -- UDS tokenizer sidecar configuration
+  sidecar:
+    enabled: true
+    image: ghcr.io/llm-d/llm-d-uds-tokenizer:v0.6.0
+    imagePullPolicy: IfNotPresent
+    name: tokenizer-uds
+    env:
+      - name: TOKENIZERS_DIR
+        value: /tokenizers
+      - name: HF_HOME
+        value: /tokenizers
+    volumeMounts:
+      - mountPath: /tokenizers
+        name: tokenizers
+      - mountPath: /tmp/tokenizer
+        name: tokenizer-uds
+    resources:
+      requests:
+        cpu: "1"
+        memory: "1Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+
+  # -- Volumes for EPP pod
+  volumes:
+    - name: tokenizers
+      emptyDir: {}
+    - name: tokenizer-uds
+      emptyDir: {}
+
+  # -- Volume mounts for EPP main container
+  volumeMounts:
+    - mountPath: /tmp/tokenizer
+      name: tokenizer-uds
+
+  # -- Plugin config file name
+  pluginsConfigFile: "precise-prefix-cache-config.yaml"
+
+  # -- Plugin config content (EndpointPickerConfig)
+  pluginsCustomConfig:
+    precise-prefix-cache-config.yaml: |
+      apiVersion: inference.networking.x-k8s.io/v1alpha1
+      kind: EndpointPickerConfig
+      plugins:
+        - type: single-profile-handler
+        - type: precise-prefix-cache-scorer
+          parameters:
+            tokenProcessorConfig:
+              blockSize: 64
+            indexerConfig:
+              tokenizersPoolConfig:
+                modelName: openai/gpt-oss-20b
+                local: null
+                hf: null
+                uds:
+                  socketFile: /tmp/tokenizer/tokenizer-uds.socket
+            kvEventsConfig:
+              topicFilter: "kv@"
+              concurrency: 4
+              discoverPods: false
+              zmqEndpoint: "tcp://*:5557"
+        - type: kv-cache-utilization-scorer
+        - type: queue-scorer
+        - type: max-score-picker
+      schedulingProfiles:
+        - name: default
+          plugins:
+            - pluginRef: precise-prefix-cache-scorer
+              weight: 3.0
+            - pluginRef: kv-cache-utilization-scorer
+              weight: 2.0
+            - pluginRef: queue-scorer
+              weight: 2.0
+            - pluginRef: max-score-picker
+
+  # -- Distributed tracing configuration
+  tracing:
+    enabled: false
+    # otelExporterEndpoint: "http://otel-collector:4317"
+    # sampling:
+    #   sampler: "parentbased_traceidratio"
+    #   samplerArg: "0.1"
+
+  # -- Monitoring configuration
+  monitoring:
+    interval: "10s"
+    prometheus:
+      enabled: true
+      auth:
+        secretName: kv-events-gateway-sa-metrics-reader-secret
+
+# -- InferencePool Configuration
+inferencePool:
+  # -- Target ports for model server endpoints
+  targetPorts:
+    - number: 8000
+  # -- Model server type (vllm, sglang, etc.)
+  modelServerType: vllm
+  # -- Label selector for matching model server pods
+  modelServers:
+    matchLabels:
+      llm-d.ai/inference-serving: "true"
+      llm-d.ai/guide: "precise-prefix-cache-aware"
+
+# -- Secret Configuration for Hugging Face Token
+secret:
+  # -- Name of the Kubernetes secret object
+  name: llm-d-hf-token
+  # -- The raw Hugging Face token. Provide via --set or a values file.
+  hfTokenValue: ""
+  # -- Set to true to create the secret. If false, assumes it already exists.
+  create: false
+  # -- Key name within the secret
+  keyPrefix: HF_TOKEN
+  # -- Key name for the secret data entry
+  key: HF_TOKEN
+
+# -- Persistence Configuration using PVC
+persistence:
+  # -- Enable persistence using a PersistentVolumeClaim
+  enabled: true
+  # -- PVC name (if not set, it will be templated)
+  name: ""
+  # -- PVC access mode
+  accessModes:
+    - ReadWriteMany
+  # -- PVC storage size
+  size: 50Gi
+  # -- Optional: Storage class name
+  storageClassName: ""
+  # -- Mount path inside the vLLM container for HF cache
+  mountPath: /data
+
+# -- Configuration for /dev/shm volume
+dshm:
+  # -- Use an empty directory for /dev/shm
+  useEmptyDir: true
+  # -- Size limit for the empty directory
+  sizeLimit: 8Gi
+  # -- PVC name for /dev/shm (overrides useEmptyDir if set)
+  pvcName: ""

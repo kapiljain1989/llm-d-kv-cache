@@ -1,0 +1,14 @@
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferencePool
+metadata:
+  name: {{ include "epp-vllm.poolName" . }}
+  namespace: {{ .Release.Namespace | default .Values.namespace }}
+  labels:
+    {{- include "epp-vllm.labels" . | nindent 4 }}
+spec:
+  targetPortNumber: {{ (index .Values.inferencePool.targetPorts 0).number }}
+  selector:
+    {{- toYaml .Values.inferencePool.modelServers.matchLabels | nindent 4 }}
+  extensionRef:
+    name: {{ include "epp-vllm.eppServiceName" . }}
+    portNumber: {{ .Values.inferenceExtension.extProcPort }}

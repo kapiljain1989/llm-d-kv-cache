@@ -1,0 +1,6 @@
+apiVersion: v2
+name: epp-vllm
+description: A Helm chart for deploying vLLM with EPP (inference-scheduler) and precise prefix cache scoring
+type: application
+version: 0.1.0
+appVersion: "latest"

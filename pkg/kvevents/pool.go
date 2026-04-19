@@ -302,7 +302,21 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 			}
 
 			// Create PodEntry for this specific event's device tier
-			podEntries := []kvblock.PodEntry{{PodIdentifier: podIdentifier, DeviceTier: deviceTier}}
+			// Check once if model uses HMA to avoid repeated lookups
+			isHMA := p.modelRegistry.IsHMA(effectiveModelName)
+
+			// Only populate StoredGroups for HMA models to save CPU and memory
+			// For simple models: skip group processing entirely (0 StoredGroups)
+			var storedGroups uint32
+			if isHMA {
+				storedGroups = 1 << ev.GroupIdx
+			}
+
+			podEntries := []kvblock.PodEntry{{
+				PodIdentifier: podIdentifier,
+				DeviceTier:    deviceTier,
+				StoredGroups:  storedGroups,
+			}}
 
 			engineKeys := make([]kvblock.BlockHash, len(ev.BlockHashes))
 			for i, hash := range ev.BlockHashes {
@@ -399,7 +413,21 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 			}
 
 			// Create PodEntry for this specific event's device tier
-			podEntries := []kvblock.PodEntry{{PodIdentifier: podIdentifier, DeviceTier: deviceTier}}
+			// Check once if model uses HMA to avoid repeated lookups
+			isHMA := p.modelRegistry.IsHMA(modelName)
+
+			// Only populate StoredGroups for HMA models to save CPU and memory
+			// For simple models: 0 StoredGroups → evict entire entry immediately
+			var storedGroups uint32
+			if isHMA {
+				storedGroups = 1 << ev.GroupIdx
+			}
+
+			podEntries := []kvblock.PodEntry{{
+				PodIdentifier: podIdentifier,
+				DeviceTier:    deviceTier,
+				StoredGroups:  storedGroups,
+			}}
 
 			// Iterate over the hashes and evict each key.
 			// The Index handles engine->request key resolution internally for both
